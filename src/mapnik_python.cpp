@@ -100,7 +100,6 @@ void export_logger();
 #include <mapnik/image_util.hpp>
 #include <mapnik/image_any.hpp>
 #include <mapnik/load_map.hpp>
-#include <mapnik/value/error.hpp>
 #include <mapnik/value.hpp>
 #include <mapnik/save_map.hpp>
 #include <mapnik/scale_denominator.hpp>
@@ -567,27 +566,6 @@ double scale_denominator(mapnik::Map const& map, bool geographic)
     return mapnik::scale_denominator(map.scale(), geographic);
 }
 
-// http://docs.python.org/c-api/exceptions.html#standard-exceptions
-void value_error_translator(mapnik::value_error const & ex)
-{
-    PyErr_SetString(PyExc_ValueError, ex.what());
-}
-
-void runtime_error_translator(std::runtime_error const & ex)
-{
-    PyErr_SetString(PyExc_RuntimeError, ex.what());
-}
-
-void out_of_range_error_translator(std::out_of_range const & ex)
-{
-    PyErr_SetString(PyExc_IndexError, ex.what());
-}
-
-void standard_error_translator(std::exception const & ex)
-{
-    PyErr_SetString(PyExc_RuntimeError, ex.what());
-}
-
 unsigned mapnik_version()
 {
     return MAPNIK_VERSION;
@@ -716,10 +694,6 @@ BOOST_PYTHON_MODULE(_mapnik)
     using mapnik::save_map;
     using mapnik::save_map_to_string;
 
-    register_exception_translator<std::exception>(&standard_error_translator);
-    register_exception_translator<std::out_of_range>(&out_of_range_error_translator);
-    register_exception_translator<mapnik::value_error>(&value_error_translator);
-    register_exception_translator<std::runtime_error>(&runtime_error_translator);
 #if defined(HAVE_CAIRO) && defined(HAVE_PYCAIRO)
     register_cairo();
 #endif

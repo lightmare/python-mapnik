@@ -31,7 +31,6 @@
 
 // mapnik
 #include <mapnik/geometry/box2d.hpp>
-#include <mapnik/value/error.hpp>
 
 using mapnik::coord;
 using mapnik::box2d;
@@ -58,7 +57,7 @@ box2d<double> from_string(std::string const& s)
     {
         std::stringstream ss;
         ss << "Could not parse bbox from string: '" << s << "'";
-        throw mapnik::value_error(ss.str());
+        throw std::invalid_argument(ss.str());
     }
 }
 

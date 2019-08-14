@@ -30,7 +30,6 @@
 #pragma GCC diagnostic pop
 
 // mapnik
-#include <mapnik/value/error.hpp>
 #include <mapnik/rule.hpp>
 #include "mapnik_enumeration.hpp"
 #include <mapnik/feature_type_style.hpp>
@@ -54,7 +53,7 @@ void set_image_filters(feature_type_style & style, std::string const& filters)
     bool result = parse_image_filters(filters, new_filters);
     if (!result)
     {
-        throw mapnik::value_error("failed to parse image-filters: '" + filters + "'");
+        throw std::invalid_argument("failed to parse image-filters: '" + filters + "'");
     }
 #ifdef _WINDOWS
     style.image_filters() = new_filters;

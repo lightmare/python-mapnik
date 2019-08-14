@@ -36,7 +36,6 @@
 #include <mapnik/grid/grid_renderer.hpp>
 #include <mapnik/grid/grid.hpp>
 #include <mapnik/grid/grid_view.hpp>
-#include <mapnik/value/error.hpp>
 #include <mapnik/feature.hpp>
 #include <mapnik/feature_kv_iterator.hpp>
 #include "python_grid_utils.hpp"
@@ -271,7 +270,7 @@ boost::python::dict grid_encode( T const& grid, std::string const& format, bool 
     {
         std::stringstream s;
         s << "'utf' is currently the only supported encoding format.";
-        throw mapnik::value_error(s.str());
+        throw std::invalid_argument(s.str());
     }
 }
 
@@ -307,7 +306,7 @@ void render_layer_for_grid(mapnik::Map const& map,
         {
             std::stringstream s;
             s << "list of field names must be strings";
-            throw mapnik::value_error(s.str());
+            throw std::invalid_argument(s.str());
         }
     }
 
