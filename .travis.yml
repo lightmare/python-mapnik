@@ -1,26 +1,16 @@
 language: generic
 
-matrix:
-  include:
-    - os: linux
-      sudo: false
-      compiler: clang
-      # note: only using ccache for CC is intentional here to
-      # workaround an odd bug in distutils that manifests when only `ccache` is used to link
-      # because distutils also has a bug whereby CC is used to compile instead of CXX, this works :)
-      env: JOBS=8 CXX="clang++-3.9 -Qunused-arguments" CC="ccache clang-3.9 -Qunused-arguments"
-      addons:
-        apt:
-          sources: [ 'ubuntu-toolchain-r-test']
-          packages: [ 'libstdc++-5-dev', 'gdb', 'apport']
-    - os: osx
-      osx_image: xcode8.2
-      compiler: clang
-      env: JOBS=4
+git:
+  submodules: false
+
+stages:
+  - Build libmapnik
+  - Test
 
 cache:
   directories:
   - $HOME/.ccache
+  - $HOME/staging
 
 env:
   global:
@@ -39,43 +29,135 @@ before_install:
    if [[ "${TRAVIS_OS_NAME}" == "osx" ]]; then
      rvm get head || true
    fi
- - source scripts/setup_mason.sh
- - export PYTHONUSERBASE=$(pwd)/mason_packages/.link
- - export PYTHONPATH=$(pwd)/mason_packages/.link/lib/python2.7/site-packages
- - export PATH=$(pwd)/mason_packages/.link/bin:${PYTHONUSERBASE}/bin:${PATH}
+ - export CCACHE_LOGFILE=/tmp/ccache.log
+ - touch "$CCACHE_LOGFILE"
+ - declare -p -- HOME "${!CCACHE@}" "${!TRAVIS@}"  # print environment variables by prefix
+ - export JOBS=${JOBS:-4}
+ - export HEAVY_JOBS=${HEAVY_JOBS:-2}
+ - export MASON_ROOT=$HOME/mason_packages
  - export MASON_BUILD=true
+ - export PATH=$MASON_ROOT/.link/bin:$PATH
+ - export PYTHONUSERBASE=$MASON_ROOT/.link
+ - export PYTHONPATH=$MASON_ROOT/.link/lib/python2.7/site-packages
+ # An ancient bug in distutils (https://bugs.python.org/issue8027)
+ # prevents having CXX="ccache c++". Luckily ccache can be invoked
+ # via a symlink named as the compiler to use.
+ # We will use ccache from Mason, so put the symlinks there.
+ - mkdir -p -- "$MASON_ROOT/.link/bin"
+ - ln -s -- ccache "$MASON_ROOT/.link/bin/${CC%% *}"
+ - ln -s -- ccache "$MASON_ROOT/.link/bin/${CXX%% *}"
  - export COMMIT_MESSAGE=$(git show -s --format=%B $TRAVIS_COMMIT | tr -d '\n')
- - |
-   if [[ $(uname -s) == 'Linux' ]]; then
-     export LDSHARED=$(python -c "import os;from distutils import sysconfig;print sysconfig.get_config_var('LDSHARED').replace('cc ','clang++-3.9 ')");
-     mason install clang++ 3.9.1
-     export PATH=$(mason prefix clang++ 3.9.1)/bin:${PATH}
-     which clang++
-   else
-     sudo easy_install pip;
-     export LDSHARED=$(python -c "import os;from distutils import sysconfig;print sysconfig.get_config_var('LDSHARED').replace('cc ','clang++ ')");
-   fi
+ - test "$TRAVIS_OS_NAME" != osx || sudo easy_install pip
+
+build_mapnik-install: &build_mapnik-install
+  - git clone --depth=1 --branch=master --no-tags https://github.com/mapnik/mapnik.git "$HOME/build/mapnik/mapnik"
+  - pushd "$HOME/build/mapnik/mapnik"
+  -   source ./scripts/travis-common.sh
+  -   source "${TRAVIS_BUILD_DIR}/patched-mapnik-bootstrap.sh"
+  -   source ./mapnik-settings.env
+  -   ccache --version
+  -   git_submodule_update --init deps/
+  - popd
+
+install:
+ # try working around https://github.com/mapnik/python-mapnik/issues/88
+#- export LDSHARED=$(python -c "import os, distutils; cxx = os.environ.get('CXX', 'c++'); p = distutils.sysconfig.get_config_var('LDSHARED').replace('cc ', cxx + ' '); print(p)")
+ - source ./scripts/setup_mason.sh
+ - install_mason_deps && setup_runtime_settings
+ - install ccache 3.3.1
+ - ccache --version
  - pip install --upgrade --user nose
  - pip install --upgrade --user wheel
  - pip install --upgrade --user twine
  - pip install --upgrade --user setuptools
  - pip install --upgrade --user PyPDF2
  - python --version
-
-install:
  - mkdir -p ${PYTHONPATH}
+ - export MAPNIK_CONFIG="$HOME/staging/bin/mapnik-config"
  - python setup.py install --prefix ${PYTHONUSERBASE}
 
 before_script:
+  - install postgres 10.3
+  - install postgis 2.4.1
+  - source ./scripts/setup_postgres.sh
+  - touch SCRIPT_START
+
  # start postgres/postgis
- - source mason-config.env
- - ./mason_packages/.link/bin/postgres -k ${PGHOST} > postgres.log &
+#- source mason-config.env
+#- ./mason_packages/.link/bin/postgres -k ${PGHOST} > postgres.log &
+#- psql -c 'CREATE DATABASE template_postgis;' -U postgres
+#- psql -c 'CREATE EXTENSION postgis;' -d template_postgis -U postgres
+#- psql -c 'SELECT PostGIS_Full_Version();' -d template_postgis -U postgres
+
+build_mapnik-script: &build_mapnik-script
+  - export SCONSFLAGS='--debug=time'
+  - pushd "$HOME/build/mapnik/mapnik"
+  -   printf >>config.py '%s = True\n' ENABLE_GLIBC_WORKAROUND QUIET
+  -   printf >>config.py '%s = True\n' MAPNIK_INDEX SHAPEINDEX
+  -   printf >>config.py '%s = False\n' BENCHMARK DEMO MAPNIK_RENDER
+  -   printf >>config.py '%s = False\n' PGSQL2SQLITE SVG2PNG
+  -   ./configure PREFIX="$HOME/staging"; configure_result=$?
+  #   print config.py regardless of configure result, that may
+  #   help troubleshooting issues with bootstrapped config.py
+  -   cat config.py
+  #   print config.log only if configure failed, otherwise it's boring
+  -   test $configure_result = 0 || cat config.log
+  -     tail "$CCACHE_LOGFILE" || true
+  -     ccache --show-stats
+  -   DEADLINE=$(( $(date +%s) +  40 * 60 ))
+  -   test_ok && scripts/travis-command-wrapper.py -s "date" -i 120 --deadline="$DEADLINE" make
+  #   only pull test/data/, let's not bother with visual tests here
+  -   test_ok && git_submodule_update --init --depth=20 test/data/
+  -   test_ok && ./test/run  # make test would pull test/data-visual/
+  -   test_ok && rm -rf "$HOME/staging"/*
+  -   test_ok && make install
+ #-   test_ok && cp -v mapnik-settings.env "$HOME/staging"/bin/
+  - popd
 
 script:
+#- source "$HOME/staging/bin/mapnik-settings.env"
+ - git submodule update --init --depth=20 test/
  - python test/run_tests.py
  - python test/visual.py -q
  # stop postgres
- - ./mason_packages/.link/bin/pg_ctl -w stop
+#- ./mason_packages/.link/bin/pg_ctl -w stop
+
+before_cache:
+ - tail -50 -- "$CCACHE_LOGFILE"
+ - ccache --version
+ - ccache --print-config
+ - ccache --show-stats
+ - ccache --zero-stats
+ - find $HOME/.ccache -mindepth 3 -newer SCRIPT_START | head | xargs -d '\n' file
+
+jobs:
+  include:
+    - &test-linux
+      stage: Test
+      os: linux
+      compiler: clang
+      env: >-
+          CC="clang-3.9"
+          CXX="clang++-3.9"
+      addons:
+        apt:
+          sources: [ ubuntu-toolchain-r-test ]
+          packages: [ clang-3.9, libstdc++-5-dev ]
+    - &test-osx
+      os: osx
+      compiler: clang
+      env: >-
+          CC="clang"
+          CXX="clang++"
+    - <<: *test-linux
+      stage: Build libmapnik
+      install: *build_mapnik-install
+      script: *build_mapnik-script
+    - <<: *test-osx
+      install: *build_mapnik-install
+      script: *build_mapnik-script
+
+after_success:
  - |
    if [[ ${COMMIT_MESSAGE} =~ "[publish]" ]]; then
      python setup.py bdist_wheel
@@ -84,7 +166,7 @@ script:
         rename 's/linux_x86_64/any/;' $PRE_DISTS
      fi
      export DISTS='dist/*'
-     $(pwd)/mason_packages/.link/bin/twine upload -u $PYPI_USER -p $PYPI_PASSWORD $DISTS
+     : $MASON_ROOT/.link/bin/twine upload -u $PYPI_USER -p $PYPI_PASSWORD $DISTS
    fi
 
 
