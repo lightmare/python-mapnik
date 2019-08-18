@@ -39,6 +39,7 @@ before_install:
  - export PATH=$MASON_ROOT/.link/bin:$PATH
  - export PYTHONUSERBASE=$MASON_ROOT/.link
  - export PYTHONPATH=$MASON_ROOT/.link/lib/python2.7/site-packages
+ - function test_ok() { return $TRAVIS_TEST_RESULT; }
  # An ancient bug in distutils (https://bugs.python.org/issue8027)
  # prevents having CXX="ccache c++". Luckily ccache can be invoked
  # via a symlink named as the compiler to use.
@@ -48,8 +49,10 @@ before_install:
  - ln -s -- ccache "$MASON_ROOT/.link/bin/${CXX%% *}"
  - export COMMIT_MESSAGE=$(git show -s --format=%B $TRAVIS_COMMIT | tr -d '\n')
  - test "$TRAVIS_OS_NAME" != osx || sudo easy_install pip
+ - export FORCE_CC=$CC
+ - export FORCE_CXX=$CXX
 
-build_mapnik-install: &build_mapnik-install
+build_mapnik-install_A: &build_mapnik-install_A
   - git clone --depth=1 --branch=master --no-tags https://github.com/mapnik/mapnik.git "$HOME/build/mapnik/mapnik"
   - pushd "$HOME/build/mapnik/mapnik"
   -   source ./scripts/travis-common.sh
@@ -59,6 +62,17 @@ build_mapnik-install: &build_mapnik-install
   -   git_submodule_update --init deps/
   - popd
 
+build_mapnik-install: &build_mapnik-install
+  - source ./scripts/setup_mason.sh
+  - install ccache 3.3.1
+  - ccache --version
+  - MAPNIK_BRANCH=master
+ #- MAPNIK_BUILD_PATH=${MASON_ROOT}/.build/mapnik-v${MAPNIK_BRANCH}
+  - SCRIPT_DIR=$(mason env MASON_DIR)/scripts/mapnik/$MAPNIK_BRANCH
+  - mkdir -p -- "$SCRIPT_DIR"
+  - cp -- ./mapnik-build-script.sh "$SCRIPT_DIR/script.sh"
+  - MAPNIK_PREFIX=$(mason prefix mapnik "$MAPNIK_BRANCH")
+
 install:
  # try working around https://github.com/mapnik/python-mapnik/issues/88
 #- export LDSHARED=$(python -c "import os, distutils; cxx = os.environ.get('CXX', 'c++'); p = distutils.sysconfig.get_config_var('LDSHARED').replace('cc ', cxx + ' '); print(p)")
@@ -66,6 +80,15 @@ install:
  - install_mason_deps && setup_runtime_settings
  - install ccache 3.3.1
  - ccache --version
+ - MAPNIK_BRANCH=master
+#- MAPNIK_BUILD_PATH=${MASON_ROOT}/.build/mapnik-v${MAPNIK_BRANCH}
+ - SCRIPT_DIR=$(mason env MASON_DIR)/scripts/mapnik/$MAPNIK_BRANCH
+ - mkdir -p -- "$SCRIPT_DIR"
+ - cp -- ./mapnik-build-script.sh "$SCRIPT_DIR/script.sh"
+ - MAPNIK_PREFIX=$(mason prefix mapnik "$MAPNIK_BRANCH")
+ - mkdir -p -- "$MAPNIK_PREFIX"
+ - tar xvzf "$HOME/staging/mapnik.tgz" -C "$MAPNIK_PREFIX"
+ - mason link mapnik "$MAPNIK_BRANCH"
  - pip install --upgrade --user nose
  - pip install --upgrade --user wheel
  - pip install --upgrade --user twine
@@ -89,8 +112,7 @@ before_script:
 #- psql -c 'CREATE EXTENSION postgis;' -d template_postgis -U postgres
 #- psql -c 'SELECT PostGIS_Full_Version();' -d template_postgis -U postgres
 
-build_mapnik-script: &build_mapnik-script
-  - export SCONSFLAGS='--debug=time'
+build_mapnik-script_A: &build_mapnik-script_A
   - pushd "$HOME/build/mapnik/mapnik"
   -   printf >>config.py '%s = True\n' ENABLE_GLIBC_WORKAROUND QUIET
   -   printf >>config.py '%s = True\n' MAPNIK_INDEX SHAPEINDEX
@@ -114,6 +136,19 @@ build_mapnik-script: &build_mapnik-script
  #-   test_ok && cp -v mapnik-settings.env "$HOME/staging"/bin/
   - popd
 
+build_mapnik-script: &build_mapnik-script
+  - export SCONSFLAGS='--debug=time'
+  - |
+    run_minutes() {
+      local m=$1; shift
+      local now=$(date +%s)
+      local stop=$(( now + m * 60 ))
+      scripts/travis-command-wrapper.py -s "date" -i 120 --deadline=$stop "$@"
+    }
+  - run_minutes 40 mason build mapnik "$MAPNIK_BRANCH"
+  - test_ok && mason link mapnik "$MAPNIK_BRANCH"
+  - test_ok && tar cvzf "$HOME/staging/mapnik.tgz" -C "$MAPNIK_PREFIX" .
+
 script:
 #- source "$HOME/staging/bin/mapnik-settings.env"
  - git submodule update --init --depth=20 test/
@@ -128,7 +163,7 @@ before_cache:
  - ccache --print-config
  - ccache --show-stats
  - ccache --zero-stats
- - find $HOME/.ccache -mindepth 3 -newer SCRIPT_START | head | xargs -d '\n' file
+ - find $HOME/.ccache -mindepth 3 -newer SCRIPT_START | head | xargs file
 
 jobs:
   include:
